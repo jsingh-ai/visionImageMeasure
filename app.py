@@ -153,7 +153,7 @@ def find_calibration_square(edges: np.ndarray, gray: np.ndarray) -> Optional[Tup
     quad, side_mean = best
     ordered, warped = warp_square(gray, quad, side_mean)
     _ = cv2.resize(warped, (300, 300))
-    pixels_per_mm = side_mean / 300.0
+    pixels_per_mm = side_mean / 200.0
     return ordered, side_mean, pixels_per_mm
 
 
