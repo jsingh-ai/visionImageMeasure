@@ -1,0 +1,24 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+env/
+venv/
+
+# Environment / secrets
+.env
+
+# IDE / tooling
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local artifacts
+uploads/
+static/results/

@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Vision Image Measure{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+</head>
+<body>
+    <div class="page">
+        <header class="hero">
+            <h1>Vision Image Measure</h1>
+            <p>Measure your bag dimensions from a single photo using a 100 mm calibration grid.</p>
+        </header>
+        <main class="content">
+            {% block content %}{% endblock %}
+        </main>
+        <footer class="footer">
+            <p>Use on the same Wi-Fi network for quick uploads. Keep the grid flat and well lit.</p>
+        </footer>
+    </div>
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html>

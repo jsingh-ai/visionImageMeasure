@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+
+{% block title %}Measurement Result{% endblock %}
+
+{% block content %}
+<section class="card">
+    <h2>Measurement Result</h2>
+    <p class="subtitle">File: {{ filename }}</p>
+
+    {% if error_message %}
+        <div class="error">
+            <p>{{ error_message }}</p>
+        </div>
+    {% else %}
+        <div class="metrics">
+            <div>
+                <h3>Width</h3>
+                <p>{{ "%.1f"|format(width_mm) }} mm</p>
+                <p>{{ "%.2f"|format(width_in) }} in</p>
+            </div>
+            <div>
+                <h3>Height</h3>
+                <p>{{ "%.1f"|format(height_mm) }} mm</p>
+                <p>{{ "%.2f"|format(height_in) }} in</p>
+            </div>
+        </div>
+        <div class="image-wrapper">
+            <img src="{{ annotated_image }}" alt="Annotated measurement result">
+        </div>
+    {% endif %}
+
+    <div class="actions">
+        <a class="button" href="{{ url_for('index') }}">Measure another</a>
+    </div>
+</section>
+{% endblock %}

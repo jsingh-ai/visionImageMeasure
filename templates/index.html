@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+
+{% block title %}Vision Image Measure - Upload{% endblock %}
+
+{% block content %}
+<section class="card">
+    <h2>Upload your photo</h2>
+    <p class="instructions">
+        Take a photo where the printed <strong>100 mm x 100 mm</strong> calibration grid is fully visible and flat.
+        Place your bag near or overlapping the grid on the same plane. Upload the image to detect the bag and measure it.
+    </p>
+
+    <form action="{{ url_for('measure') }}" method="post" enctype="multipart/form-data" class="upload-form">
+        <label class="file-input">
+            <span id="file-label">Choose an image</span>
+            <input type="file" name="file" accept="image/*" required>
+        </label>
+        <button type="submit">Measure</button>
+    </form>
+
+    {% with messages = get_flashed_messages() %}
+        {% if messages %}
+            <div class="flash">
+                {% for message in messages %}
+                    <p>{{ message }}</p>
+                {% endfor %}
+            </div>
+        {% endif %}
+    {% endwith %}
+</section>
+{% endblock %}
