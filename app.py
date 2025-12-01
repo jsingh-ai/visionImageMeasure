@@ -24,13 +24,22 @@ def allowed_file(filename: str) -> bool:
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
 
 
-def resize_for_processing(image: np.ndarray, max_dim: int = 1600) -> Tuple[np.ndarray, float]:
+def resize_for_processing(image: np.ndarray, max_dim: int = 1800) -> Tuple[np.ndarray, float]:
     h, w = image.shape[:2]
     scale = 1.0
     if max(h, w) > max_dim:
         scale = max_dim / float(max(h, w))
         image = cv2.resize(image, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
     return image, scale
+
+
+def enhance_contrast_lab(image: np.ndarray) -> np.ndarray:
+    lab = cv2.cvtColor(image, cv2.COLOR_BGR2Lab)
+    l, a, b = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    l = clahe.apply(l)
+    lab = cv2.merge((l, a, b))
+    return cv2.cvtColor(lab, cv2.COLOR_Lab2BGR)
 
 
 def auto_canny_thresholds(gray: np.ndarray) -> Tuple[int, int]:
@@ -43,21 +52,30 @@ def auto_canny_thresholds(gray: np.ndarray) -> Tuple[int, int]:
 
 
 def preprocess_edges(image: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    gray = cv2.bilateralFilter(gray, d=9, sigmaColor=75, sigmaSpace=75)
+    bilateral = cv2.bilateralFilter(image, d=9, sigmaColor=75, sigmaSpace=75)
+    enhanced = enhance_contrast_lab(bilateral)
+    gray = cv2.cvtColor(enhanced, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (3, 3), 0)
 
     lower, upper = auto_canny_thresholds(blurred)
-    canny_edges = cv2.Canny(blurred, lower, upper)
+    edges_canny = cv2.Canny(blurred, lower, upper)
+
+    sobelx = cv2.Sobel(blurred, cv2.CV_64F, 1, 0, ksize=3)
+    sobely = cv2.Sobel(blurred, cv2.CV_64F, 0, 1, ksize=3)
+    sobel_mag = cv2.magnitude(sobelx, sobely)
+    sobel_mag = np.uint8(255 * sobel_mag / np.max(sobel_mag + 1e-5))
 
     thresh = cv2.adaptiveThreshold(
-        blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 21, 5
+        blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 31, 7
     )
-    combined = cv2.bitwise_or(canny_edges, thresh)
+
+    combined = cv2.bitwise_or(edges_canny, sobel_mag)
+    combined = cv2.bitwise_or(combined, thresh)
 
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
     opened = cv2.morphologyEx(combined, cv2.MORPH_OPEN, kernel, iterations=1)
-    return gray, opened
+    closed = cv2.morphologyEx(opened, cv2.MORPH_CLOSE, kernel, iterations=1)
+    return gray, closed
 
 
 def order_points(pts: np.ndarray) -> np.ndarray:
@@ -91,23 +109,13 @@ def iou(box_a: Tuple[int, int, int, int], box_b: Tuple[int, int, int, int]) -> f
     return inter_area / float(union) if union > 0 else 0.0
 
 
-def warp_square_and_scale(gray: np.ndarray, quad: np.ndarray) -> Optional[Tuple[np.ndarray, float, float]]:
+def warp_square(gray: np.ndarray, quad: np.ndarray, side_guess: float) -> Tuple[np.ndarray, np.ndarray]:
     rect = order_points(quad.astype("float32"))
-    (tl, tr, br, bl) = rect
-    width_a = np.linalg.norm(br - bl)
-    width_b = np.linalg.norm(tr - tl)
-    height_a = np.linalg.norm(tr - br)
-    height_b = np.linalg.norm(tl - bl)
-    max_w = int(max(width_a, width_b))
-    max_h = int(max(height_a, height_b))
-    if max_w < 20 or max_h < 20:
-        return None
-    dst = np.array([[0, 0], [max_w - 1, 0], [max_w - 1, max_h - 1], [0, max_h - 1]], dtype="float32")
+    warp_size = max(int(round(side_guess)), 300)
+    dst = np.array([[0, 0], [warp_size - 1, 0], [warp_size - 1, warp_size - 1], [0, warp_size - 1]], dtype="float32")
     M = cv2.getPerspectiveTransform(rect, dst)
-    warped = cv2.warpPerspective(gray, M, (max_w, max_h))
-    side_length_px = float((max_w + max_h) / 2.0)
-    pixels_per_mm = side_length_px / 100.0
-    return rect, side_length_px, pixels_per_mm
+    warped = cv2.warpPerspective(gray, M, (warp_size, warp_size))
+    return rect, warped
 
 
 def find_calibration_square(edges: np.ndarray, gray: np.ndarray) -> Optional[Tuple[np.ndarray, float, float]]:
@@ -116,13 +124,13 @@ def find_calibration_square(edges: np.ndarray, gray: np.ndarray) -> Optional[Tup
         return None
 
     img_area = gray.shape[0] * gray.shape[1]
+    min_area = max(500.0, 0.0005 * img_area)
     best = None
     best_area = 0.0
-    fiducials: List[np.ndarray] = []
 
     for cnt in contours:
         area = cv2.contourArea(cnt)
-        if area < 0.005 * img_area:
+        if area < min_area:
             continue
         peri = cv2.arcLength(cnt, True)
         approx = cv2.approxPolyDP(cnt, 0.02 * peri, True)
@@ -130,61 +138,61 @@ def find_calibration_square(edges: np.ndarray, gray: np.ndarray) -> Optional[Tup
             continue
 
         quad = approx.reshape(4, 2)
-        rect = cv2.boundingRect(quad)
-        _, _, w, h = rect
-        if w <= 0 or h <= 0:
-            continue
-
-        if area < 0.02 * img_area:
-            fiducials.append(quad)
-            continue
-
-        warped = warp_square_and_scale(gray, quad)
-        if warped is None:
-            continue
-        _, side_length_px, pixels_per_mm = warped
-        if side_length_px <= 0 or pixels_per_mm <= 0:
+        side_lengths = [np.linalg.norm(quad[i] - quad[(i + 1) % 4]) for i in range(4)]
+        side_mean = float(np.mean(side_lengths))
+        if side_mean < 20:
             continue
 
         if area > best_area:
             best_area = area
-            best = (quad, side_length_px, pixels_per_mm)
+            best = (quad, side_mean)
 
     if best is None:
         return None
 
-    quad, side_length_px, pixels_per_mm = best
-    ordered = order_points(quad.astype("float32"))
+    quad, side_mean = best
+    ordered, warped = warp_square(gray, quad, side_mean)
+    _ = cv2.resize(warped, (300, 300))
+    pixels_per_mm = side_mean / 300.0
+    return ordered, side_mean, pixels_per_mm
 
-    if len(fiducials) >= 2:
-        fid_points = np.concatenate(fiducials, axis=0).astype("float32")
-        if fid_points.shape[0] >= 4:
-            ordered = order_points(fid_points)
 
-    return ordered, side_length_px, pixels_per_mm
+def mask_calibration_region(edges: np.ndarray, quad: np.ndarray) -> np.ndarray:
+    mask = np.ones_like(edges, dtype="uint8") * 255
+    cv2.fillPoly(mask, [np.int32(quad)], 0)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
+    mask = cv2.dilate(mask, kernel, iterations=1)
+    masked_edges = cv2.bitwise_and(edges, edges, mask=mask)
+    return masked_edges
 
 
 def find_bag_rect(edges: np.ndarray, gray: np.ndarray, calibration_quad: np.ndarray) -> Optional[Tuple[np.ndarray, float, float]]:
-    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    masked_edges = mask_calibration_region(edges, calibration_quad)
+    contours, _ = cv2.findContours(masked_edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not contours:
         return None
 
-    img_area = gray.shape[0] * gray.shape[1]
     calib_box = bbox_from_points(calibration_quad)
     candidates: List[Tuple[np.ndarray, float, float, float]] = []
 
     for cnt in contours:
         area = cv2.contourArea(cnt)
-        if area < 0.005 * img_area:
+        if area < 2000:
             continue
 
         rect = cv2.minAreaRect(cnt)
         (cx, cy), (w, h), _ = rect
         if w <= 0 or h <= 0:
             continue
+
         min_side = min(w, h)
         max_side = max(w, h)
-        if min_side < 20 or (min_side / max_side) < 0.2:
+        if max_side / max(min_side, 1e-5) > 12.0:
+            continue
+
+        rect_area = w * h
+        contour_ratio = area / max(rect_area, 1e-5)
+        if contour_ratio < 0.4:
             continue
 
         box = cv2.boxPoints(rect)
@@ -195,7 +203,6 @@ def find_bag_rect(edges: np.ndarray, gray: np.ndarray, calibration_quad: np.ndar
         if overlap > 0.2:
             continue
 
-        rect_area = w * h
         candidates.append((box_int, float(w), float(h), rect_area))
 
     if not candidates:
@@ -235,14 +242,14 @@ def annotate_image(
             )
 
     overlay = output.copy()
-    cv2.rectangle(overlay, (10, 10), (output.shape[1] - 10, 70), (0, 0, 0), -1)
+    cv2.rectangle(overlay, (10, 10), (output.shape[1] - 10, 80), (0, 0, 0), -1)
     cv2.addWeighted(overlay, 0.4, output, 0.6, 0, output)
 
     if width_mm is not None and height_mm is not None and width_in is not None and height_in is not None:
         text = f"W: {width_mm:.1f} mm ({width_in:.2f} in)  |  H: {height_mm:.1f} mm ({height_in:.2f} in)"
     else:
         text = status_text or "Processing"
-    cv2.putText(output, text, (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
+    cv2.putText(output, text, (20, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.85, (255, 255, 255), 2, cv2.LINE_AA)
     return output
 
 
@@ -267,7 +274,7 @@ def process_image(image_path: str, original_filename: str) -> dict:
         display = save_display_image(resized, "error_calibration", "Calibration square not detected")
         return {
             "success": False,
-            "error": "Calibration square not detected. Please ensure the printed 100 mm x 100 mm grid is fully visible, flat, and well-lit in the image.",
+            "error": "Calibration square not detected. Please ensure the grid is visible, flat, and well-lit.",
             "display_image": display,
         }
 
@@ -281,7 +288,7 @@ def process_image(image_path: str, original_filename: str) -> dict:
         display = save_display_image(resized, "error_bag", "Bag not detected")
         return {
             "success": False,
-            "error": "Could not detect a rectangular object (bag). Please make sure the bag is clearly visible and not merged with the background.",
+            "error": "Could not detect a rectangular object (bag). Please ensure it is visible and distinct from the background.",
             "display_image": display,
         }
 
